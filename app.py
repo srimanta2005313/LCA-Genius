@@ -473,5 +473,96 @@ def result_page(id):
     return render_template("result.html", assessment=assessment, input=assessment.get_input(), results=assessment.get_results())
 
 
+@app.route("/delete_assessment/<int:id>", methods=['POST'])
+@login_required
+def delete_assessment(id):
+    assessment = Assessment.query.get_or_404(id)
+    if assessment.user_id != current_user.id:
+        flash("Unauthorized access", "danger")
+        return redirect(url_for('landingpage'))
+    
+    db.session.delete(assessment)
+    db.session.commit()
+    flash("Assessment deleted successfully.", "success")
+    return redirect(url_for('landingpage'))
+
+
+@app.route("/download_pdf/<int:id>")
+@login_required
+def download_pdf(id):
+    assessment = Assessment.query.get_or_404(id)
+    if assessment.user_id != current_user.id:
+        return "Unauthorized", 403
+
+    input_data = assessment.get_input()
+    results = assessment.get_results()
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    pdf.cell(200, 10, txt="LCA Analysis Report", ln=1, align="C")
+    pdf.ln(10)
+
+    pdf.set_font("Arial", 'B', size=12)
+    pdf.cell(200, 10, txt="Input Parameters:", ln=1)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 10, txt=f"Company: {assessment.company_name}", ln=1)
+    if assessment.project_name:
+        pdf.cell(200, 10, txt=f"Project: {assessment.project_name}", ln=1)
+    
+    pdf.ln(5)
+    
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', size=12)
+    pdf.cell(200, 10, txt="Results:", ln=1)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"CO2 Emissions: {results['CO2_Emissions_kg_per_ton']} kg/ton", ln=1)
+    pdf.cell(200, 10, txt=f"Circularity Score: {results['Circularity_Score']}", ln=1)
+
+    # Pie Chart Generation
+    breakdown = results.get('breakdown', {})
+    if breakdown:
+        labels = list(breakdown.keys())
+        sizes = list(breakdown.values())
+        
+        plt.figure(figsize=(6, 6))
+        plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140, colors=['#ff9999','#66b3ff','#99ff99','#ffcc99'])
+        plt.title('Emissions Breakdown')
+        plt.axis('equal') 
+        
+        # Save temp image
+        img_filename = f"temp_chart_{os.urandom(8).hex()}.png"
+        img_path = os.path.join(app.root_path, 'static', img_filename)
+        plt.savefig(img_path, format='png', bbox_inches='tight')
+        plt.close()
+        
+        pdf.ln(10)
+        pdf.image(img_path, x=50, w=110)
+        
+        # Cleanup
+        try:
+            os.remove(img_path)
+        except:
+            pass
+            
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', size=12)
+    pdf.cell(200, 10, txt="Recommendations:", ln=1)
+    pdf.set_font("Arial", size=12)
+    for rec in results.get('recommendations', []):
+        pdf.multi_cell(0, 10, txt=f"- {rec}")
+
+    response = io.BytesIO(pdf.output(dest='S').encode('latin-1'))
+    
+    from flask import send_file
+    return send_file(
+        response,
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name=f'LCA_Report_{id}.pdf'
+    )
+
+
 if __name__ == "__main__":
     socketio.run(app, debug=True)

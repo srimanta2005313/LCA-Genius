@@ -310,5 +310,118 @@ def process_bulk_upload_background(task_id, user_id, company_name, data_rows):
 def on_join(data):
     task_id = data['task_id']
     join_room(task_id)
+@app.route("/simulate", methods=['POST'])
+@login_required
+def simulate():
+    if not lca_model:
+        flash("Model not loaded. Please contact admin.", "danger")
+        return redirect(url_for('landingpage'))
+
+    metal_type = request.form.get('metal_type')
+    
+    # Metal-wise base data for simulation
+    METAL_BASELINE = {
+        "Aluminium": {
+            "primary_energy": 15000,
+            "secondary_energy": 3000,
+            "emission_factor": 1.0
+        },
+        "Copper": {
+            "primary_energy": 8000,
+            "secondary_energy": 2000,
+            "emission_factor": 0.7
+        },
+        "Steel": {
+            "primary_energy": 6000,
+            "secondary_energy": 1800,
+            "emission_factor": 0.6
+        }
+    }
+
+    base = METAL_BASELINE.get(metal_type, METAL_BASELINE["Steel"]) # Fallback to Steel
+    
+    # Define scenarios
+    scenarios = [
+        {
+            'name': 'Scenario A: Primary + Coal',
+            'Metal_Type': metal_type,
+            'Production_Route': 'Primary',
+            'Energy_Consumption_MJ_per_ton': float(base["primary_energy"]),
+            'Fuel_Type': 'Coal',
+            'Transport_Distance_km': 1000.0,
+            'Manufacturing_Process': 'Smelting',
+            'End_of_Life_Option': 'Landfill'
+        },
+        {
+            'name': 'Scenario B: Secondary + Grid',
+            'Metal_Type': metal_type,
+            'Production_Route': 'Secondary',
+            'Energy_Consumption_MJ_per_ton': float(base["secondary_energy"] * 1.5), # Slightly higher energy for "Transition" grid
+            'Fuel_Type': 'Electricity',
+            'Transport_Distance_km': 500.0,
+            'Manufacturing_Process': 'Casting',
+            'End_of_Life_Option': 'Recycling'
+        },
+        {
+            'name': 'Scenario C: Secondary + Renewable',
+            'Metal_Type': metal_type,
+            'Production_Route': 'Secondary',
+            'Energy_Consumption_MJ_per_ton': float(base["secondary_energy"]),
+            'Fuel_Type': 'Renewable',
+            'Transport_Distance_km': 200.0,
+            'Manufacturing_Process': 'Refining',
+            'End_of_Life_Option': 'Reuse'
+        }
+    ]
+
+    simulation_results = []
+    
+    try:
+        for scenario in scenarios:
+            features = {}
+            for col, le in encoders.items():
+                if col in scenario:
+                    try:
+                        features[col] = le.transform([scenario[col]])[0]
+                    except ValueError:
+                        features[col] = 0
+            
+            feature_vector = [
+                features['Metal_Type'],
+                features['Production_Route'],
+                scenario['Energy_Consumption_MJ_per_ton'],
+                features['Fuel_Type'],
+                scenario['Transport_Distance_km'],
+                features['Manufacturing_Process'],
+                features['End_of_Life_Option']
+            ]
+
+            prediction = lca_model.predict([feature_vector])[0]
+            co2 = round(prediction[0], 2)
+            circularity = round(prediction[1], 2)
+
+            simulation_results.append({
+                'name': scenario['name'],
+                'CO2': co2,
+                'Circularity': circularity,
+                'Energy': scenario['Energy_Consumption_MJ_per_ton'],
+                'Fuel': scenario['Fuel_Type'],
+                'Route': scenario['Production_Route']
+            })
+
+        # Calculate Gains (Relative to Scenario A)
+        baseline = simulation_results[0]
+        for res in simulation_results:
+            res['energy_saved'] = round(baseline['Energy'] - res['Energy'], 2)
+            res['circularity_gain'] = round(res['Circularity'] - baseline['Circularity'], 2)
+            res['co2_reduction_pct'] = round(((baseline['CO2'] - res['CO2']) / baseline['CO2']) * 100, 2) if baseline['CO2'] != 0 else 0
+
+        return render_template("simulation_result.html", 
+                               metal_type=metal_type, 
+                               results=simulation_results)
+
+    except Exception as e:
+        flash(f"Error during simulation: {str(e)}", "danger")
+        return redirect(url_for('landingpage'))
 if __name__ == "__main__":
     socketio.run(app, debug=True)

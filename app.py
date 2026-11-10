@@ -147,6 +147,168 @@ def predict():
     except Exception as e:
         flash(f"Error during prediction: {str(e)}", "danger")
         return redirect(url_for('landingpage'))
+@app.route("/bulk_upload", methods=['POST'])
+@login_required
+def bulk_upload():
+    if 'csv_file' not in request.files:
+        flash("No file part", "danger")
+        return redirect(url_for('landingpage'))
+    
+    file = request.files['csv_file']
+    if file.filename == '':
+        flash("No selected file", "danger")
+        return redirect(url_for('landingpage'))
+    
+    if not file.filename.endswith('.csv'):
+        flash("Please upload a valid CSV file.", "warning")
+        return redirect(url_for('landingpage'))
 
+    try:
+        df = pd.read_csv(io.StringIO(file.stream.read().decode("UTF8")), sep=",")
+        
+        # Required columns for model
+        required_cols = [
+            'Project_Name', 'Metal_Type', 'Production_Route', 
+            'Energy_Consumption', 'Fuel_Type', 'Transport_Distance', 
+            'Manufacturing_Process', 'End_of_Life'
+        ]
+        
+        # Check if columns exist
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            flash(f"Missing columns in CSV: {', '.join(missing)}", "danger")
+            return redirect(url_for('landingpage'))
+            
+        # Store df rows in session or generate a task ID
+        task_id = str(uuid.uuid4())
+        
+        # For simplicity, convert DF to dict to pass to background thread
+        data_rows = df.to_dict('records')
+        
+        # Start background thread
+        socketio.start_background_task(process_bulk_upload_background, task_id, current_user.id, current_user.company_name, data_rows)
+        
+        return render_template("bulk_progress.html", task_id=task_id)
+
+    except Exception as e:
+        flash(f"Error reading CSV: {str(e)}", "danger")
+        return redirect(url_for('landingpage'))
+
+def process_bulk_upload_background(task_id, user_id, company_name, data_rows):
+    # Give the frontend client a few seconds to load the page and connect to the socket
+    socketio.sleep(2.5)
+
+    with app.app_context():
+        processed_count = 0
+        total_rows = len(data_rows)
+        total_co2 = 0
+        avg_circularity = 0
+        
+        new_assessments = []
+        
+        for index, row in enumerate(data_rows):
+            try:
+                # Prepare data for prediction
+                input_data = {
+                    'Company_Name': company_name,
+                    'Project_Name': str(row['Project_Name']),
+                    'Metal_Type': str(row['Metal_Type']),
+                    'Production_Route': str(row['Production_Route']),
+                    'Energy_Consumption_MJ_per_ton': float(row['Energy_Consumption']),
+                    'Fuel_Type': str(row['Fuel_Type']),
+                    'Transport_Distance_km': float(row['Transport_Distance']),
+                    'Manufacturing_Process': str(row['Manufacturing_Process']),
+                    'End_of_Life_Option': str(row['End_of_Life'])
+                }
+
+                features = {}
+                for col, le in encoders.items():
+                    # Map CSV column names to encoder names
+                    mapping = {
+                        'Metal_Type': 'Metal_Type',
+                        'Production_Route': 'Production_Route',
+                        'Fuel_Type': 'Fuel_Type',
+                        'Manufacturing_Process': 'Manufacturing_Process',
+                        'End_of_Life_Option': 'End_of_Life_Option'
+                    }
+                    
+                    feat_key = None
+                    for k, v in mapping.items():
+                        if v == col: feat_key = k
+                    
+                    if feat_key and feat_key in input_data:
+                        try:
+                            features[col] = le.transform([input_data[feat_key]])[0]
+                        except:
+                            features[col] = 0
+                
+                feature_vector = [
+                    features.get('Metal_Type', 0),
+                    features.get('Production_Route', 0),
+                    input_data['Energy_Consumption_MJ_per_ton'],
+                    features.get('Fuel_Type', 0),
+                    input_data['Transport_Distance_km'],
+                    features.get('Manufacturing_Process', 0),
+                    features.get('End_of_Life_Option', 0)
+                ]
+
+                prediction = lca_model.predict([feature_vector])[0]
+                co2 = round(prediction[0], 2)
+                circ = round(prediction[1], 2)
+                
+                sustainability_analysis = analyze_sustainability(co2, circ)
+                
+                results = {
+                    'CO2_Emissions_kg_per_ton': co2,
+                    'Circularity_Score': circ,
+                    'sustainability': sustainability_analysis,
+                    'breakdown': {
+                        'Extraction': round(co2 * 0.4, 2),
+                        'Processing': round(co2 * 0.3, 2),
+                        'Manufacturing': round(co2 * 0.2, 2),
+                        'End_of_Life': round(co2 * 0.1, 2)
+                    }
+                }
+
+                # Create assessment object
+                assessment = Assessment(
+                    user_id=user_id,
+                    company_name=input_data['Company_Name'],
+                    project_name=input_data['Project_Name'],
+                    metal_type=input_data['Metal_Type'],
+                    production_route=input_data['Production_Route']
+                )
+                assessment.set_input(input_data)
+                assessment.set_results(results)
+                
+                db.session.add(assessment)
+                
+                # We won't attach the new_assessments list to socket anymore, it will be pulled from DB or cached 
+                # but to render bulk_result.html we need to pass something or just return successfully and redirect.
+                
+                processed_count += 1
+                total_co2 += co2
+                avg_circularity += circ
+                
+                # Emit progress every row (or every 10 rows if large)
+                progress = int((processed_count / total_rows) * 100)
+                socketio.emit('bulk_progress', {'progress': progress, 'current': processed_count, 'total': total_rows}, room=task_id)
+
+                # Add a synthetic delay so the progress bar is visible even for small files
+                socketio.sleep(0.5) 
+            except Exception as e:
+                print(f"Error processing row {index}: {e}")
+                
+        db.session.commit()
+        
+        # Save temporary summary to db or session, for simplicity we will just emit complete
+        # and redirect user to history page where they can see the newly added items
+        socketio.emit('bulk_complete', {'redirect_url': '/'}, room=task_id)
+
+
+@socketio.on('join_task')
+def on_join(data):
+    task_id = data['task_id']
+    join_room(task_id)
 if __name__ == "__main__":
     socketio.run(app, debug=True)

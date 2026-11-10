@@ -1,0 +1,256 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .login-wrapper {
+        position: relative;
+        width: 100%;
+        max-width: 440px;
+        padding: 20px;
+        z-index: 10;
+        animation: fadeIn 0.8s ease-out;
+        margin-top: 5rem;
+    }
+
+    .glass-card {
+        background: rgba(15, 23, 42, 0.4);
+        backdrop-filter: blur(20px) saturate(180%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 24px;
+        padding: 3rem 2.5rem;
+        box-shadow:
+            0 25px 50px -12px rgba(0, 0, 0, 0.5),
+            0 0 40px rgba(56, 189, 248, 0.1);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .glass-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+        transition: 0.5s;
+    }
+
+    .glass-card:hover::before {
+        left: 100%;
+    }
+
+    .login-header h2 {
+        font-size: 2.25rem;
+        font-weight: 800;
+        text-align: center;
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.025em;
+    }
+
+    .login-header p {
+        color: #94a3b8;
+        text-align: center;
+        font-size: 0.875rem;
+        margin-bottom: 2.5rem;
+    }
+
+    .form-group {
+        position: relative;
+        margin-bottom: 1.75rem;
+    }
+
+    .input-icon {
+        position: absolute;
+        left: 1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #64748b;
+        transition: color 0.3s ease;
+    }
+
+    .form-input {
+        width: 100%;
+        background: rgba(30, 41, 59, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 0.875rem 1rem 0.875rem 3rem;
+        color: white;
+        font-size: 0.95rem;
+        transition: all 0.3s ease;
+        outline: none;
+    }
+
+    .form-input:focus {
+        border-color: #38bdf8;
+        background: rgba(30, 41, 59, 0.6);
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.15);
+    }
+
+    .form-input:focus+.input-icon {
+        color: #38bdf8;
+    }
+
+    .form-label {
+        position: absolute;
+        left: 3rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #64748b;
+        pointer-events: none;
+        transition: all 0.3s ease;
+        font-size: 0.95rem;
+    }
+
+    .form-input:focus~.form-label,
+    .form-input:not(:placeholder-shown)~.form-label {
+        top: -0.6rem;
+        left: 0.8rem;
+        font-size: 0.75rem;
+        color: #38bdf8;
+        background: #0f172a;
+        padding: 0 0.4rem;
+        font-weight: 600;
+    }
+
+    .btn-glow {
+        position: relative;
+        width: 100%;
+        padding: 1rem;
+        background: linear-gradient(135deg, #0ea5e9, #6366f1);
+        color: white;
+        border: none;
+        border-radius: 12px;
+        font-weight: 700;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.5rem;
+        box-shadow: 0 10px 15px -3px rgba(56, 189, 248, 0.3);
+    }
+
+    .btn-glow:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 20px 25px -5px rgba(56, 189, 248, 0.4);
+        filter: brightness(1.1);
+    }
+
+    .btn-glow:active {
+        transform: translateY(0);
+    }
+
+    .form-footer {
+        text-align: center;
+        margin-top: 2rem;
+    }
+
+    .form-footer a {
+        color: #38bdf8;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 0.875rem;
+        transition: all 0.3s ease;
+    }
+
+    .form-footer a:hover {
+        color: #818cf8;
+        text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+    }
+
+    .back-nav {
+        position: absolute;
+        top: 2rem;
+        left: 2rem;
+        z-index: 100;
+    }
+
+    .back-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6rem 1.2rem;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 50px;
+        color: #94a3b8;
+        text-decoration: none;
+        font-size: 0.875rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        backdrop-filter: blur(10px);
+    }
+
+    .back-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        border-color: rgba(56, 189, 248, 0.3);
+        transform: translateX(-5px);
+    }
+
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+</style>
+
+<div class="login-wrapper">
+    <div class="glass-card">
+        <div class="login-header">
+            <h2 class="gradient-text">Welcome Back</h2>
+            <p>Enter your credentials to access your LCA dashboard</p>
+        </div>
+
+        <form action="" method="POST">
+            {{ form.hidden_tag() }}
+
+            <div class="form-group">
+                {{ form.email(class_="form-input", placeholder=" ") }}
+                <i class="fa-solid fa-envelope input-icon"></i>
+                <label class="form-label">Email Address</label>
+            </div>
+
+            <div class="form-group">
+                {{ form.password(class_="form-input", placeholder=" ") }}
+                <i class="fa-solid fa-lock input-icon"></i>
+                <label class="form-label">Password</label>
+            </div>
+
+            <div class="pt-2">
+                <button type="submit" class="btn-glow">
+                    <span>Sign In</span>
+                    <i class="fa-solid fa-right-to-bracket"></i>
+                </button>
+            </div>
+
+            <div class="form-footer">
+                <p class="text-sm text-gray-400">
+                    New to LCA Genius?
+                    <a href="{{ url_for('signups') }}" class="ml-1">Create an account</a>
+                </p>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

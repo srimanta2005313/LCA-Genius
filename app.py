@@ -563,6 +563,196 @@ def download_pdf(id):
         download_name=f'LCA_Report_{id}.pdf'
     )
 
+@app.route('/admin')
+def admin_dashboard():
+    if not session.get('admin_logged_in'):
+        flash("Admin access required.", "danger")
+        return redirect(url_for('logins'))
+
+    # 1. Metal Type Distribution
+    from sqlalchemy import func
+    metal_counts = db.session.query(Assessment.metal_type, func.count(Assessment.id)).group_by(Assessment.metal_type).all()
+    metal_labels = [m[0] for m in metal_counts]
+    metal_values = [m[1] for m in metal_counts]
+
+    # 2. Get all assessments to process trends and high impact filters
+    all_assessments = Assessment.query.all()
+    
+    trends_dict = {} # {date: [values]}
+    company_monthly_stats = {} # {(company, month): {'co2': [], 'circ': []}}
+    
+    total_co2 = 0
+    total_circ = 0
+    total_count = len(all_assessments)
+
+    for a in all_assessments:
+        res = a.get_results()
+        co2 = res.get('CO2_Emissions_kg_per_ton', 0)
+        circ = res.get('Circularity_Score', 0)
+        
+        # Aggregation for trends
+        date_str = a.created_at.strftime('%Y-%m-%d')
+        if date_str not in trends_dict:
+            trends_dict[date_str] = []
+        trends_dict[date_str].append(co2)
+        
+        # Aggregation for Company Monthly Stats
+        # Month format: "March 2026"
+        month_str = a.created_at.strftime('%B %Y')
+        comp_key = (a.company_name, month_str)
+        if comp_key not in company_monthly_stats:
+            company_monthly_stats[comp_key] = {'co2': [], 'circ': [], 'detailed_projects': []}
+        company_monthly_stats[comp_key]['co2'].append(co2)
+        company_monthly_stats[comp_key]['circ'].append(circ)
+        company_monthly_stats[comp_key]['detailed_projects'].append({
+            'name': a.project_name or "Project Analysis",
+            'co2': co2,
+            'circ': circ
+        })
+        
+        total_co2 += co2
+        total_circ += circ
+
+    # Process company monthly stats into a flat list for the template
+    aggregated_companies = []
+    for (name, month), data in company_monthly_stats.items():
+        avg_co2 = round(sum(data['co2']) / len(data['co2']), 2)
+        avg_circ = round(sum(data['circ']) / len(data['circ']), 2)
+        aggregated_companies.append({
+            'company': name,
+            'co2': avg_co2,
+            'circ': avg_circ,
+            'month': month,
+            'projects': data['detailed_projects']
+        })
+
+    # Sort by month descending, then company name
+    aggregated_companies.sort(key=lambda x: (x['month'], x['company']), reverse=True)
+
+    # Process trends data
+    sorted_dates = sorted(trends_dict.keys())
+    avg_co2_per_day = [round(sum(trends_dict[d]) / len(trends_dict[d]), 2) for d in sorted_dates]
+
+    stats = {
+        'total_assessments': total_count,
+        'avg_co2': round(total_co2 / total_count, 2) if total_count > 0 else 0,
+        'avg_circ': round(total_circ / total_count, 2) if total_count > 0 else 0
+    }
+
+    return render_template('admin.html', 
+                          metal_labels=metal_labels, 
+                          metal_values=metal_values,
+                          trend_labels=sorted_dates,
+                          trend_values=avg_co2_per_day,
+                          high_impact=aggregated_companies, # Reuse variable name for simplicity in template
+                          stats=stats)
+
+
+@app.route("/admin/notify_company", methods=['POST'])
+def admin_notify_company():
+    """Send an email notification to users of an unsustainable company."""
+    if not session.get('admin_logged_in'):
+        return jsonify({'success': False, 'message': 'Admin access required.'}), 403
+
+    data = request.get_json()
+    company_name = data.get('company_name', '').strip()
+    avg_co2 = data.get('avg_co2', 0)
+    avg_circ = data.get('avg_circ', 0)
+    month = data.get('month', '')
+
+    if not company_name:
+        return jsonify({'success': False, 'message': 'Company name is required.'}), 400
+
+    # Find all registered users belonging to this company
+    users = User.query.filter(
+        db.func.lower(User.company_name) == db.func.lower(company_name)
+    ).all()
+
+    if not users:
+        return jsonify({'success': False, 'message': f'No registered users found for company "{company_name}".'}), 404
+
+    recipients = [u.email for u in users]
+    sent_count = 0
+    errors = []
+
+    for user in users:
+        try:
+            msg = Message(
+                subject=f"[LCA Platform] Sustainability Alert for {company_name}",
+                sender=app.config['MAIL_USERNAME'],
+                recipients=[user.email]
+            )
+            msg.html = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #0f172a; color: #e2e8f0; border-radius: 12px; overflow: hidden;">
+                <div style="background: linear-gradient(135deg, #ef4444, #dc2626); padding: 32px; text-align: center;">
+                    <h1 style="color: white; margin: 0; font-size: 24px;">⚠️ Sustainability Alert</h1>
+                    <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0;">Action Required — Environmental Performance Below Threshold</p>
+                </div>
+                <div style="padding: 32px;">
+                    <p style="color: #94a3b8; font-size: 15px; line-height: 1.6;">Dear <strong style="color: #f1f5f9;">{user.username}</strong>,</p>
+                    <p style="color: #94a3b8; font-size: 15px; line-height: 1.6;">
+                        Our LCA monitoring platform has flagged <strong style="color: #f87171;">{company_name}</strong> as <strong style="color: #f87171;">Unsustainable</strong> based on the latest assessment data for <strong style="color: #f1f5f9;">{month}</strong>.
+                    </p>
+                    <div style="background: #1e293b; border: 1px solid rgba(239,68,68,0.3); border-radius: 10px; padding: 20px; margin: 24px 0;">
+                        <h3 style="color: #f87171; margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: 2px;">Current Performance Metrics</h3>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="padding: 10px 0; color: #94a3b8; font-size: 14px;">Avg CO₂ Emissions</td>
+                                <td style="padding: 10px 0; text-align: right; font-weight: bold; color: #f87171; font-size: 18px;">{avg_co2} <span style="font-size: 11px; color: #64748b;">kg/ton</span></td>
+                            </tr>
+                            <tr style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                <td style="padding: 10px 0; color: #94a3b8; font-size: 14px;">Avg Circularity Score</td>
+                                <td style="padding: 10px 0; text-align: right; font-weight: bold; color: #f87171; font-size: 18px;">{avg_circ}<span style="font-size: 11px; color: #64748b;">%</span></td>
+                            </tr>
+                            <tr style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                <td style="padding: 10px 0; color: #94a3b8; font-size: 14px;">CO₂ Threshold</td>
+                                <td style="padding: 10px 0; text-align: right; font-weight: bold; color: #10b981; font-size: 14px;">&lt; 1,000 kg/ton</td>
+                            </tr>
+                            <tr style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                <td style="padding: 10px 0; color: #94a3b8; font-size: 14px;">Circularity Threshold</td>
+                                <td style="padding: 10px 0; text-align: right; font-weight: bold; color: #10b981; font-size: 14px;">&gt;= 50%</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div style="background: #1e293b; border-left: 3px solid #f59e0b; border-radius: 6px; padding: 16px; margin: 16px 0;">
+                        <p style="margin: 0; color: #fbbf24; font-size: 13px; font-weight: bold;">⚡ Recommended Actions</p>
+                        <ul style="color: #94a3b8; font-size: 13px; margin: 8px 0 0; padding-left: 18px; line-height: 1.8;">
+                            <li>Switch to Secondary production routes to reduce CO₂ intensity.</li>
+                            <li>Transition to Renewable energy sources for operations.</li>
+                            <li>Increase recycled content and improve end-of-life recovery rates.</li>
+                            <li>Optimize transport logistics to lower carbon footprint.</li>
+                        </ul>
+                    </div>
+                    <p style="color: #64748b; font-size: 13px; line-height: 1.6; margin-top: 24px;">
+                        Please log in to the LCA Platform to review your detailed assessment history and take corrective actions immediately.
+                    </p>
+                    <div style="text-align: center; margin: 28px 0 12px;">
+                        <a href="http://localhost:5000" style="background: linear-gradient(135deg, #0ea5e9, #6366f1); color: white; padding: 14px 36px; border-radius: 50px; text-decoration: none; font-weight: bold; font-size: 14px; display: inline-block;">View Assessment Dashboard</a>
+                    </div>
+                </div>
+                <div style="background: #0a0f1e; padding: 20px; text-align: center; border-top: 1px solid rgba(255,255,255,0.05);">
+                    <p style="color: #334155; font-size: 11px; margin: 0;">This is an automated notification from the LCA Environmental Monitoring Platform. Please do not reply to this email.</p>
+                </div>
+            </div>
+            """
+            mail.send(msg)
+            sent_count += 1
+        except Exception as e:
+            errors.append(str(e))
+
+    if sent_count > 0:
+        return jsonify({
+            'success': True,
+            'message': f'Notification sent to {sent_count} user(s) at {company_name}.',
+            'sent_count': sent_count,
+            'recipients': recipients
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'message': f'Failed to send notifications. Errors: {"; ".join(errors)}'
+        }), 500
+
 
 if __name__ == "__main__":
     socketio.run(app, debug=True)

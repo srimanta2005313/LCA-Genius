@@ -423,5 +423,55 @@ def simulate():
     except Exception as e:
         flash(f"Error during simulation: {str(e)}", "danger")
         return redirect(url_for('landingpage'))
+
+@app.route("/export_history")
+@login_required
+def export_history():
+    assessments = Assessment.query.filter_by(user_id=current_user.id).order_by(Assessment.created_at.desc()).all()
+    
+    if not assessments:
+        flash("No assessments found to export.", "warning")
+        return redirect(url_for('landingpage'))
+
+    data = []
+    for a in assessments:
+        results = a.get_results()
+        row = {
+            'Date': a.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'Company Name': a.company_name,
+            'Project Name': a.project_name,
+            'Metal Type': a.metal_type,
+            'Production Route': a.production_route,
+            'CO2 Emissions (kg/ton)': results.get('CO2_Emissions_kg_per_ton', ''),
+            'Circularity Score': results.get('Circularity_Score', ''),
+            'Verdict': results.get('sustainability', {}).get('verdict', '')
+        }
+        data.append(row)
+
+    df = pd.DataFrame(data)
+    
+    # Create an in-memory CSV string
+    output = io.StringIO()
+    df.to_csv(output, index=False)
+    
+    # Send the response
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-disposition": "attachment; filename=assessment_history.csv"}
+    )
+    
+@app.route("/result/<int:id>")
+@login_required
+def result_page(id):
+    assessment = Assessment.query.get_or_404(id)
+    if assessment.user_id != current_user.id:
+        flash("Unauthorized access", "danger")
+        return redirect(url_for('landingpage'))
+    
+    return render_template("result.html", assessment=assessment, input=assessment.get_input(), results=assessment.get_results())
+
+
 if __name__ == "__main__":
     socketio.run(app, debug=True)
